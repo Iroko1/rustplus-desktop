@@ -5,12 +5,22 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using RustPlusDesk.Services;
 
 namespace RustPlusDesk.Views;
 
 public partial class MainWindow
 {
     private const double PlayerAvatarSize = 24;
+
+    private double _playerMarkerScale = 1.0;
+    private bool _abbreviateNames = false;
+
+    private string GetDisplayPlayerName(string name)
+    {
+        if (!_abbreviateNames || string.IsNullOrWhiteSpace(name)) return name;
+        return name.Substring(0, 1) + "...";
+    }
 
     private sealed class PlayerMarkerTag
     {
@@ -20,6 +30,7 @@ public partial class MainWindow
         public Ellipse? AvatarCircle;
         public double Radius;
         public bool IsDeathPin { get; set; }
+        public bool IsPlayer { get; set; }
         public bool IsDot;
 
         public double ScaleExp { get; set; } = SHOP_SIZE_EXP;
@@ -61,7 +72,8 @@ public partial class MainWindow
 
     private FrameworkElement BuildPlayerDotMarker(ulong sid, string name, bool online, bool dead)
     {
-        var brush = dead ? Brushes.IndianRed : (online ? Brushes.LimeGreen : Brushes.LightGray);
+        var isSelf = sid == _mySteamId;
+        var brush = dead ? Brushes.IndianRed : (online ? (isSelf ? Brushes.ForestGreen : Brushes.LimeGreen) : Brushes.LightGray);
 
         var dot = new Ellipse
         {
@@ -73,9 +85,10 @@ public partial class MainWindow
             Margin = new Thickness(0, 0, 4, 0),
         };
 
+        var displayName = GetDisplayPlayerName(name);
         var tb = new TextBlock
         {
-            Text = name,
+            Text = displayName,
             Foreground = brush,
             FontSize = 12,
             Margin = new Thickness(6, -2, 0, 0)
@@ -91,9 +104,10 @@ public partial class MainWindow
             SteamId = sid,
             Name = name,
             NameText = tb,
-            AvatarCircle = null,
+            AvatarCircle = dot,
             Radius = 5,
             IsDeathPin = false,
+            IsPlayer = true,
             IsDot = true,
             ScaleExp = 1.05,
             ScaleBaseMult = 1.0,
@@ -102,12 +116,14 @@ public partial class MainWindow
             ScaleCenterY = 5.0
         };
 
+        ApplyCurrentOverlayScale(sp);
         return sp;
     }
 
     private FrameworkElement BuildPlayerMarker(ulong sid, string name, bool online, bool dead)
     {
-        var brush = dead ? Brushes.IndianRed : (online ? Brushes.LimeGreen : Brushes.Gray);
+        var isSelf = sid == _mySteamId;
+        var brush = dead ? Brushes.IndianRed : (online ? (isSelf ? Brushes.ForestGreen : Brushes.LimeGreen) : Brushes.Gray);
         var avatar = GetAvatar(sid);
 
         if (avatar == null)
@@ -121,7 +137,8 @@ public partial class MainWindow
                 StrokeThickness = 2,
                 Margin = new Thickness(0, 0, 4, 0)
             };
-            var tb = new TextBlock { Text = name, Foreground = brush, FontSize = 12, Margin = new Thickness(6, -2, 0, 0) };
+            var displayName = GetDisplayPlayerName(name);
+            var tb = new TextBlock { Text = displayName, Foreground = brush, FontSize = 12, Margin = new Thickness(6, -2, 0, 0) };
             var sp = new StackPanel { Orientation = Orientation.Horizontal };
             sp.Children.Add(dot);
             sp.Children.Add(tb);
@@ -131,6 +148,7 @@ public partial class MainWindow
                 NameText = tb,
                 AvatarCircle = null,
                 Radius = 5,
+                IsPlayer = true,
                 IsDot = true,
                 ScaleExp = 1.05,
                 ScaleBaseMult = 1.0,
@@ -144,7 +162,8 @@ public partial class MainWindow
         }
         else
         {
-            var tb = new TextBlock { Text = name, Foreground = brush, FontSize = 12, Margin = new Thickness(6, -2, 0, 0) };
+            var displayName = GetDisplayPlayerName(name);
+            var tb = new TextBlock { Text = displayName, Foreground = brush, FontSize = 12, Margin = new Thickness(6, -2, 0, 0) };
             var circle = new Ellipse
             {
                 Width = PlayerAvatarSize,
@@ -172,6 +191,7 @@ public partial class MainWindow
                 NameText = tb,
                 AvatarCircle = circle,
                 Radius = PlayerAvatarSize * 0.5,
+                IsPlayer = true,
                 ScaleExp = 0.85,
                 ScaleBaseMult = 1.0,
                 ScaleTarget = host,
@@ -211,9 +231,12 @@ public partial class MainWindow
     private void UpdatePlayerMarker(ref FrameworkElement el, uint key, ulong sid, string name, bool online, bool dead)
     {
         if (sid == 0) return;
+        var displayName = GetDisplayPlayerName(name);
+
         if (!_showProfileMarkers)
         {
-            var brush = dead ? Brushes.IndianRed : (online ? Brushes.LimeGreen : Brushes.LightGray);
+            var isSelf = sid == _mySteamId;
+            var brush = dead ? Brushes.IndianRed : (online ? (isSelf ? Brushes.ForestGreen : Brushes.LimeGreen) : Brushes.LightGray);
 
             if (el.Tag is not PlayerMarkerTag t || !t.IsDot)
             {
@@ -226,7 +249,7 @@ public partial class MainWindow
             }
             else
             {
-                t.NameText.Text = name;
+                t.NameText.Text = displayName;
                 t.NameText.Foreground = brush;
 
                 if (t.NameText.Parent is Panel sp)
@@ -241,16 +264,17 @@ public partial class MainWindow
             return;
         }
 
-        var brush2 = dead ? Brushes.IndianRed : (online ? Brushes.LimeGreen : Brushes.LightGray);
+        var isSelf2 = sid == _mySteamId;
+        var brush2 = dead ? Brushes.IndianRed : (online ? (isSelf2 ? Brushes.ForestGreen : Brushes.LimeGreen) : Brushes.LightGray);
         var avatar = GetAvatarForMap(sid);
 
         if (el.Tag is PlayerMarkerTag tag)
         {
-            if (tag.NameText != null) tag.NameText.Text = name;
+            if (tag.NameText != null) tag.NameText.Text = displayName;
             if (tag.NameText != null) tag.NameText.Foreground = brush2;
 
-            if (avatar != null && tag.AvatarCircle == null ||
-                avatar == null && tag.AvatarCircle != null)
+            if (avatar != null && tag.IsDot ||
+                avatar == null && !tag.IsDot)
             {
                 var newEl = BuildPlayerMarker(sid, name, online, dead);
                 int idx = Overlay.Children.IndexOf(el);
@@ -258,7 +282,7 @@ public partial class MainWindow
                 else Overlay.Children.Add(newEl);
                 _dynEls[key] = newEl; el = newEl;
             }
-            else if (tag.AvatarCircle != null && avatar != null)
+            else if (avatar != null && !tag.IsDot && tag.AvatarCircle != null)
             {
                 tag.AvatarCircle.Fill = new ImageBrush(avatar) { Stretch = Stretch.UniformToFill };
             }
@@ -276,6 +300,7 @@ public partial class MainWindow
     private void ChkProfileMarkers_Toggled(object? sender, RoutedEventArgs e)
     {
         _showProfileMarkers = ChkProfileMarkers.IsChecked == true;
+        if (_vm != null && !_vm.IsInitializing) TrackingService.MapShowSteamMarkers = _showProfileMarkers;
 
         foreach (var kv in _dynEls.ToList())
         {
@@ -301,6 +326,7 @@ public partial class MainWindow
     private void ChkDeathMarkers_Toggled(object? sender, RoutedEventArgs e)
     {
         _showDeathMarkers = ChkDeathMarkers.IsChecked == true;
+        if (_vm != null && !_vm.IsInitializing) TrackingService.MapShowDeathTags = _showDeathMarkers;
         if (!_showDeathMarkers) ClearAllDeathPins();
     }
 
@@ -330,7 +356,7 @@ public partial class MainWindow
                 Name = name,
                 IsDeathPin = true,
                 ScaleExp = 0.8,
-                ScaleBaseMult = 0.9,
+                ScaleBaseMult = 0.72,
                 ScaleTarget = null,
                 ScaleCenterX = PinW * 0.5,
                 ScaleCenterY = PinH
@@ -481,7 +507,9 @@ public partial class MainWindow
             }
         }
 
-        double scale = CalcOverlayScale(eff, exp, baseMult);
+        bool isPlayerOrDeathMarker = el.Tag is PlayerMarkerTag pmtScale && (pmtScale.IsPlayer || pmtScale.IsDeathPin);
+        double scaleMultiplier = isPlayerOrDeathMarker ? _playerMarkerScale : 1.0;
+        double scale = CalcOverlayScale(eff, exp, baseMult) * scaleMultiplier;
         double rotation = (el.Tag is PlayerMarkerTag ptRot) ? ptRot.Rotation : 0;
 
         if (centerX >= 0 && centerY >= 0)
@@ -522,6 +550,64 @@ public partial class MainWindow
             if (!source.IsAnimated)
             {
                 rt.Angle = rotation;
+            }
+        }
+
+        // Scale stroke thickness proportionally for player markers
+        if (el.Tag is PlayerMarkerTag pmt && pmt.AvatarCircle != null)
+        {
+            double baseStroke = pmt.IsDot ? 2.0 : 2.0;
+            pmt.AvatarCircle.StrokeThickness = Math.Max(0.5, baseStroke * _playerMarkerScale);
+        }
+    }
+
+    private void SliderPlayerIconSize_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _playerMarkerScale = e.NewValue;
+        if (_vm != null && !_vm.IsInitializing) TrackingService.MapPlayerIconScale = _playerMarkerScale;
+        RefreshAllOverlayScales();
+    }
+
+    private void BtnAbbreviateNames_Toggled(object sender, RoutedEventArgs e)
+    {
+        _abbreviateNames = BtnAbbreviateNames.IsChecked == true;
+        if (_vm != null && !_vm.IsInitializing) TrackingService.MapAbbreviateNames = _abbreviateNames;
+        
+        foreach (var t in TeamMembers) t.Abbreviate = _abbreviateNames;
+        RefreshStreamerModeUI();
+
+        if (_abbreviateNames)
+        {
+            if (BtnToggleServerArea != null && BtnToggleServerArea.IsChecked == false)
+            {
+                BtnToggleServerArea.IsChecked = true;
+                BtnToggleServerArea_Click(null, null);
+            }
+
+            if (!TrackingService.HideConsole)
+            {
+                TrackingService.HideConsole = true;
+                if (TxtLog != null) TxtLog.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        foreach (var kv in _dynEls.ToList())
+        {
+            if (kv.Value is FrameworkElement el && el.Tag is PlayerMarkerTag tag)
+            {
+                if (tag.SteamId == 0 || tag.IsDeathPin) continue;
+                var sid = tag.SteamId;
+                var name = TeamMembers.FirstOrDefault(t => t.SteamId == sid)?.Name ?? "player";
+                if (_lastPresence.TryGetValue(sid, out var p))
+                {
+                    var online = p.Item1;
+                    var dead = p.Item2;
+                    UpdatePlayerMarker(ref el, kv.Key, sid, name, online, dead);
+                }
+                else
+                {
+                    UpdatePlayerMarker(ref el, kv.Key, sid, name, online: false, dead: false);
+                }
             }
         }
     }

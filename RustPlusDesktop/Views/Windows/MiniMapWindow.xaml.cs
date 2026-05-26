@@ -53,6 +53,8 @@ namespace RustPlusDesk
                     OnClicked?.Invoke();
                 }
             };
+
+            SettingsOverlay.ParentWindow = this;
         }
 
         private int _viewboxId = 0;
@@ -112,32 +114,8 @@ namespace RustPlusDesk
             {
                 // SHIFT gedrückt → Fenstergröße ändern
                 double factor = e.Delta > 0 ? 1.1 : 1.0 / 1.1;
-
-                // aktuelle Größe
                 double newW = Width * factor;
-                double newH = Height * factor;
-
-                // Mindest- und Maximalwerte, damit’s nicht verschwindet oder riesig wird
-                newW = Math.Max(160, Math.Min(newW, 600));
-                newH = Math.Max(160, Math.Min(newH, 600));
-
-                Width = newW;
-                Height = newH;
-
-                // Kreis und Rand anpassen
-                Circle.Width = newW;
-                Circle.Height = newH;
-
-                if (Content is Grid g)
-                {
-                    foreach (var child in g.Children)
-                    {
-                        if (child is Border b)
-                        {
-                            b.CornerRadius = new CornerRadius(newW / 2.0);
-                        }
-                    }
-                }
+                UpdateSize(newW, updateSlider: true);
 
                 e.Handled = true;
                 return;
@@ -202,8 +180,8 @@ namespace RustPlusDesk
 
             // Verhältnis: wieviel Karten-Pixel steckt in 1 Fenster-Pixel?
             // (Window.Width/Height nimmst du aus dem tatsächlichen Fenster)
-            double winW = Math.Max(1.0, this.ActualWidth);
-            double winH = Math.Max(1.0, this.ActualHeight);
+            double winW = Math.Max(1.0, MapContainer.ActualWidth);
+            double winH = Math.Max(1.0, MapContainer.ActualHeight);
 
             double scaleX = shownW / winW;
             double scaleY = shownH / winH;
@@ -242,32 +220,81 @@ namespace RustPlusDesk
             MirrorBrush.Stretch = Stretch.Uniform;
         }
 
-        // Falls du später eckig statt rund willst:
-        public void SetSquare(bool square)
+        private void BtnSettings_Click(object sender, RoutedEventArgs e)
         {
-            if (square)
+            SettingsOverlay.Visibility = Visibility.Visible;
+            SettingsHoverBorder.Visibility = Visibility.Collapsed;
+        }
+
+        public void ApplyLoadedSettings(RustPlusDesk.Services.MiniMapSettings settings)
+        {
+            if (MapShapeBorder != null)
+                MapShapeBorder.Opacity = settings.Opacity;
+
+            if (TimeOverlayBorder != null)
+                TimeOverlayBorder.Visibility = settings.ShowTime ? Visibility.Visible : Visibility.Collapsed;
+
+            UpdateSize(settings.Size, updateSlider: false);
+        }
+
+        private bool _isUpdatingSize = false;
+        public void UpdateSize(double newSize, bool updateSlider = true)
+        {
+            if (_isUpdatingSize) return;
+            _isUpdatingSize = true;
+            try
             {
-                Circle.Visibility = Visibility.Collapsed;
-                Content = new Border
+                newSize = Math.Max(160, Math.Min(newSize, 800));
+                
+                double targetWindowSize = Math.Max(260, newSize); // Ensure Window is at least 260x260 so SettingsOverlay never clips!
+
+                if (!double.IsNaN(Left) && !double.IsNaN(Top) && Width > 0 && Height > 0)
                 {
-                    Width = Width,
-                    Height = Height,
-                    CornerRadius = new CornerRadius(12),
-                    BorderBrush = new SolidColorBrush(Color.FromArgb(102, 0, 0, 0)),
-                    BorderThickness = new Thickness(1),
-                    Background = Brushes.Transparent,
-                  //  Child = new Rectangle
-                  //  {
-                  //      Fill = MirrorBrush,
-                  //      RadiusX = 12,
-                  //      RadiusY = 12
-                   // }
-                };
+                    // Keep the center stationary on the screen during resize
+                    double oldCenterX = Left + Width / 2.0;
+                    double oldCenterY = Top + Height / 2.0;
+
+                    Width = targetWindowSize;
+                    Height = targetWindowSize;
+
+                    Left = oldCenterX - targetWindowSize / 2.0;
+                    Top = oldCenterY - targetWindowSize / 2.0;
+                }
+                else
+                {
+                    Width = targetWindowSize;
+                    Height = targetWindowSize;
+                }
+
+                int idx = SettingsOverlay?.CmbShape?.SelectedIndex ?? 0;
+                if (MapContainer != null && MapShapeBorder != null)
+                {
+                    if (idx == 0) // Circle
+                    {
+                        MapContainer.Width = newSize;
+                        MapContainer.Height = newSize;
+                        MapShapeBorder.CornerRadius = new CornerRadius(newSize / 2.0);
+                    }
+                    else if (idx == 1) // Square
+                    {
+                        MapContainer.Width = newSize;
+                        MapContainer.Height = newSize;
+                        MapShapeBorder.CornerRadius = new CornerRadius(12);
+                    }
+                    else if (idx == 2) // Rectangle (16:9)
+                    {
+                        MapContainer.Width = newSize;
+                        MapContainer.Height = newSize * 9.0 / 16.0;
+                        MapShapeBorder.CornerRadius = new CornerRadius(12);
+                    }
+                }
+
+                if (updateSlider && SettingsOverlay != null)
+                    SettingsOverlay.UpdateSliderValue(newSize);
             }
-            else
+            finally
             {
-                // zurück auf rund
-                InitializeComponent();
+                _isUpdatingSize = false;
             }
         }
     }

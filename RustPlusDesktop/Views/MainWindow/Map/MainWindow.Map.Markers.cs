@@ -47,6 +47,13 @@ public partial class MainWindow
     private DateTime? _heliLastEventUtc;   // Session memory: last crash or despawn
     private bool _heliLastEventWasCrash;    // Was the last event a crash (shot down)?
     private bool _firstPollDyn = true;
+
+    // Patrol Heli & Traveling Vendor Spawning / Despawning memory
+    private DateTime? _heliSpawnTime;
+    private bool _heliMidEvent;
+    private DateTime? _vendorSpawnTime;
+    private DateTime? _vendorDespawnTime;
+    private bool _vendorMidEvent;
     private int _pollFailCount = 0;
     private bool _isAutoReconnecting = false;
 
@@ -99,9 +106,9 @@ public partial class MainWindow
 
         foreach (var m in _monData)
         {
-            var p = WorldToImagePx(m.X, m.Y);
-
             var key = NormalizeMonName(m.Name, out var variant);
+
+            var p = WorldToImagePx(m.X, m.Y);
             var nice = Beautify(m.Name);
             var tt = string.IsNullOrEmpty(variant) ? nice : $"{nice} ({variant})";
 
@@ -109,14 +116,19 @@ public partial class MainWindow
             fe.Tag = m;
 
             Overlay.Children.Add(fe);
-            Panel.SetZIndex(fe, 800);
+            bool isTrain = key.Contains("train tunnel", StringComparison.OrdinalIgnoreCase);
+            Panel.SetZIndex(fe, isTrain ? 700 : 900);
             _monEls[key + "@" + p.X.ToString("0") + "," + p.Y.ToString("0")] = fe;
 
-            ApplyCurrentOverlayScale(fe);
-            Canvas.SetLeft(fe, p.X - 14);
-            Canvas.SetTop(fe, p.Y - 14);
+            ApplyMonumentScale(fe);
+            fe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            double w = fe.DesiredSize.Width > 0 ? fe.DesiredSize.Width : 28;
+            double h = fe.DesiredSize.Height > 0 ? fe.DesiredSize.Height : 28;
+            Canvas.SetLeft(fe, p.X - w / 2);
+            Canvas.SetTop(fe, p.Y - h / 2);
             fe.Visibility = _showMonuments ? Visibility.Visible : Visibility.Collapsed;
         }
+        PopulateMonumentList();
     }
 
     private void RefreshMonumentOverlayPositions()
@@ -131,16 +143,27 @@ public partial class MainWindow
                 ApplyMonumentScale(fe);
                 Canvas.SetLeft(fe, p.X - fe.RenderSize.Width / 2);
                 Canvas.SetTop(fe, p.Y - fe.RenderSize.Height / 2);
-                Panel.SetZIndex(fe, 800);
+                
+                string key = NormalizeMonName(m.Item3, out var _);
+                bool isTrain = key.Contains("train tunnel", StringComparison.OrdinalIgnoreCase);
+                Panel.SetZIndex(fe, isTrain ? 700 : 900);
             }
             else if (fe.Tag != null)
             {
                 dynamic d = fe.Tag;
                 var p = WorldToImagePx((double)d.X, (double)d.Y);
-                ApplyCurrentOverlayScale(fe);
-                Canvas.SetLeft(fe, p.X - 14);
-                Canvas.SetTop(fe, p.Y - 14);
-                Panel.SetZIndex(fe, 800);
+                ApplyMonumentScale(fe);
+                fe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                double w = fe.DesiredSize.Width > 0 ? fe.DesiredSize.Width : 28;
+                double h = fe.DesiredSize.Height > 0 ? fe.DesiredSize.Height : 28;
+                Canvas.SetLeft(fe, p.X - w / 2);
+                Canvas.SetTop(fe, p.Y - h / 2);
+                
+                string? name = null;
+                try { name = d.Name; } catch { }
+                string key = NormalizeMonName(name ?? "", out var _);
+                bool isTrain = key.Contains("train tunnel", StringComparison.OrdinalIgnoreCase);
+                Panel.SetZIndex(fe, isTrain ? 700 : 900);
             }
         }
     }
@@ -149,9 +172,24 @@ public partial class MainWindow
     {
         if (el == null) return;
         double eff = GetEffectiveZoom();
-        double scale = CalcOverlayScale(eff, MON_SIZE_EXP, MON_BASE_MULT);
+        double scale;
+
+        if (TrackingService.MapUseMonumentText)
+        {
+            // Inverse scaling to make text labels appear larger/compensation on zoom outs!
+            scale = CalcOverlayScale(eff, 0.45, 0.95) * TrackingService.MapMonumentScale;
+            el.Visibility = _showMonuments ? Visibility.Visible : Visibility.Collapsed;
+        }
+        else
+        {
+            // Standard icon mode: also respects custom scaling slider
+            scale = CalcOverlayScale(eff, MON_SIZE_EXP, MON_BASE_MULT) * TrackingService.MapMonumentScale;
+            el.Visibility = _showMonuments ? Visibility.Visible : Visibility.Collapsed;
+        }
+
         el.RenderTransformOrigin = new Point(0.5, 0.5);
         el.RenderTransform = new ScaleTransform(scale, scale);
+        el.Opacity = TrackingService.MapMonumentOpacity;
     }
 
     private async Task LoadMapAsync()
@@ -189,8 +227,33 @@ public partial class MainWindow
 
             double wDip2 = map.Bitmap.PixelWidth * (96.0 / map.Bitmap.DpiX);
             double hDip2 = map.Bitmap.PixelHeight * (96.0 / map.Bitmap.DpiY);
+            var filteredMons = new List<(double X, double Y, string Name)>();
+            foreach (var m in map.Monuments)
+            {
+                var lower = m.Name?.ToLowerInvariant() ?? "";
+                bool isUnderwater = lower.Contains("underwater") || lower.Contains("under water") || lower.Contains("underwaterlab") || lower.Contains("moonpool");
+                if (isUnderwater)
+                {
+                    bool exists = filteredMons.Any(existing =>
+                    {
+                        var exLower = existing.Name?.ToLowerInvariant() ?? "";
+                        bool exIsUnderwater = exLower.Contains("underwater") || exLower.Contains("under water") || exLower.Contains("underwaterlab") || exLower.Contains("moonpool");
+                        if (exIsUnderwater)
+                        {
+                            double dx = existing.X - m.X;
+                            double dy = existing.Y - m.Y;
+                            double dist = Math.Sqrt(dx * dx + dy * dy);
+                            return dist < 150.0;
+                        }
+                        return false;
+                    });
+
+                    if (exists) continue;
+                }
+                filteredMons.Add(m);
+            }
             int s = map.WorldSize;
-            _monData = map.Monuments.ToList();
+            _monData = filteredMons;
             BuildMonumentOverlays();
             var worldRectPx = ComputeWorldRectFromWorldSize(wDip2, hDip2, s, padWorld: 2000);
             AppendLog($"worldRectDip(fromS)=[{(int)worldRectPx.X},{(int)worldRectPx.Y},{(int)worldRectPx.Width}x{(int)worldRectPx.Height}] dipSize={wDip2:F0}x{hDip2:F0} S={s}");
@@ -249,6 +312,7 @@ public partial class MainWindow
                     kv.Value.Visibility = _showPlayers ? Visibility.Visible : Visibility.Collapsed;
             }
         }
+        UpdateSelectAllState();
     }
 
     private FrameworkElement BuildEventIconHost(FrameworkElement inner, string? tooltip, int size, double? scaleExp = null, double? baseMult = null)
@@ -319,8 +383,8 @@ public partial class MainWindow
                 if (_announceSpawns && TrackingService.AnnounceCargo)
                 {
                     string grid = GetGridLabel(m.X, m.Y);
-                    string locStr = distFromCenter > (half * 1.05) ? $"far out at sea (near {grid})" : grid;
-                    _ = SendTeamChatSafeAsync($"Cargo Ship spawned {locStr}");
+                    string locStr = distFromCenter > (half * 1.05) ? string.Format(Properties.Resources.CargoFarOutAtSea, grid) : grid;
+                    _ = SendTeamChatSafeAsync(string.Format(Properties.Resources.AlertCargoSpawned, locStr));
                     
                     if (state.SeenAtEdge)
                         AppendLog($"[cargo] Spawn detected at edge (dist: {distFromCenter:F0}, threshold: {half * 0.85:F0})");
@@ -418,7 +482,7 @@ public partial class MainWindow
             if ((DateTime.UtcNow - state.DockTime.Value).TotalSeconds >= 5)
             {
                 string grid = GetGridLabel(m.X, m.Y);
-                _ = SendTeamChatSafeAsync($"Cargo Ship docked at {state.HarborName} ({grid})");
+                _ = SendTeamChatSafeAsync(string.Format(Properties.Resources.AlertCargoDocked, state.HarborName, grid));
                 state.AnnouncedDock = true;
             }
         }
@@ -441,7 +505,7 @@ public partial class MainWindow
                         if (dToH < dLastToH) // Approaching
                         {
                             string grid = GetGridLabel(h.X, h.Y);
-                            _ = SendTeamChatSafeAsync($"Cargo Ship expected to dock at {Beautify(h.Name!)} ({grid}) in approx. 5 minutes.");
+                            _ = SendTeamChatSafeAsync(string.Format(Properties.Resources.AlertCargoExpectedDock, Beautify(h.Name!), grid));
                             state.AnnouncedArrivalWarning = true;
                             state.ArrivalWarnedAt = DateTime.UtcNow; // Record for accuracy validation
                             break;
@@ -467,7 +531,7 @@ public partial class MainWindow
                 else
                 {
                     string grid = GetGridLabel(m.X, m.Y);
-                    _ = SendTeamChatSafeAsync($"Cargo Ship departing from {state.HarborName} in 5 minutes ({grid})");
+                    _ = SendTeamChatSafeAsync(string.Format(Properties.Resources.AlertCargoDeparting, state.HarborName, grid));
                     state.AnnouncedEgressWarning = true;
                 }
             }
@@ -481,8 +545,8 @@ public partial class MainWindow
     private static string FormatAgo(TimeSpan ts)
     {
         if (ts.TotalHours >= 1)
-            return $"{(int)ts.TotalHours}h {ts.Minutes}m";
-        return $"{(int)ts.TotalMinutes}m";
+            return string.Format(Properties.Resources.AgoHoursMinutes, (int)ts.TotalHours, ts.Minutes);
+        return string.Format(Properties.Resources.AgoMinutes, (int)ts.TotalMinutes);
     }
 
     private void CleanupCargoDockStates()
@@ -581,6 +645,7 @@ public partial class MainWindow
                 var cPatrol = list.Count(m => m.Type == 8);
             }
 
+            _lastDynMarkers = combinedList;
             UpdateDynUI(combinedList);
             UpdateEventDock(combinedList);
 
@@ -627,6 +692,13 @@ public partial class MainWindow
         public string? ToolTip;
     }
 
+    private List<RustPlusClientReal.DynMarker>? _lastDynMarkers;
+
+    public void RefreshEventDock()
+    {
+        UpdateEventDock(_lastDynMarkers ?? new List<RustPlusClientReal.DynMarker>());
+    }
+
     private RustPlusClientReal.DynMarker GetPersistentEvent(IReadOnlyList<RustPlusClientReal.DynMarker> markers, int type)
     {
         var m = markers.FirstOrDefault(m => m.Type == type);
@@ -664,17 +736,29 @@ public partial class MainWindow
         string? heliTip = null;
         if (heli.Id != 0)
         {
-            heliTip = "Patrol Heli active on map";
+            if (_heliSpawnTime.HasValue)
+            {
+                var elapsed = DateTime.UtcNow - _heliSpawnTime.Value;
+                heliTimer = elapsed.TotalHours >= 1
+                    ? string.Format(Properties.Resources.TimerHoursMinutes, (int)elapsed.TotalHours, elapsed.Minutes)
+                    : string.Format(Properties.Resources.TimerMinutesSeconds, (int)elapsed.TotalMinutes, elapsed.Seconds);
+                heliTip = string.Format(Properties.Resources.HeliActiveRunningFor, FormatAgo(elapsed));
+            }
+            else
+            {
+                heliTimer = "??:??";
+                heliTip = _heliMidEvent ? Properties.Resources.ConnectedMidEventSpawnUnknown : Properties.Resources.HeliActiveSpawnUnknown;
+            }
         }
         else if (_heliLastEventUtc.HasValue)
         {
             var ago = DateTime.UtcNow - _heliLastEventUtc.Value;
             heliTimer = $"-{(int)ago.TotalMinutes}:{ago.Seconds:D2}";
             heliTip = _heliLastEventWasCrash 
-                ? $"Patrol Heli shot down {(int)ago.TotalMinutes}m {ago.Seconds}s ago this session"
-                : $"Patrol Heli left the map {(int)ago.TotalMinutes}m {ago.Seconds}s ago this session";
+                ? string.Format(Properties.Resources.HeliShotDownAgo, FormatAgo(ago))
+                : string.Format(Properties.Resources.HeliLeftMapAgo, FormatAgo(ago));
         }
-        activeEvents.Add(new EventDockItem { Name = "Patrol Heli", Icon = "pack://application:,,,/Assets/icons/animat-Icons/patrol_helicopter.png", Active = heli.Id != 0, Id = heli.Id, X = heli.X, Y = heli.Y, Trackable = true, Type = 8, TimerText = heliTimer, ToolTip = heliTip });
+        activeEvents.Add(new EventDockItem { Name = Properties.Resources.HeliEventName, Icon = "pack://application:,,,/Assets/icons/animat-Icons/patrol_helicopter.png", Active = heli.Id != 0, Id = heli.Id, X = heli.X, Y = heli.Y, Trackable = true, Type = 8, TimerText = heliTimer, ToolTip = heliTip });
 
  
         // 2. Cargo Ship (Type 5)
@@ -694,12 +778,12 @@ public partial class MainWindow
                 {
                     var dockRemain = TimeSpan.FromMinutes(dockDuration) - (DateTime.UtcNow - ds.DockTime.Value);
                     cargoTimer = dockRemain.TotalSeconds > 0 ? $"{(int)dockRemain.TotalMinutes}:{dockRemain.Seconds:D2}" : "0:00";
-                    cargoTip = $"Docked at {ds.HarborName ?? "harbor"} – departs in ~{cargoTimer}";
+                    cargoTip = string.Format(Properties.Resources.CargoDockedDepartsIn, ds.HarborName ?? Properties.Resources.HarborFallback, cargoTimer);
                 }
                 else
                 {
                     cargoTimer = "??:??";
-                    cargoTip = ds.WasAlreadyDocked ? "Already docked on connect – depart time unknown" : $"Docked at {ds.HarborName ?? "harbor"} (dock duration not yet learned)";
+                    cargoTip = ds.WasAlreadyDocked ? Properties.Resources.CargoAlreadyDockedOnConnect : string.Format(Properties.Resources.CargoDockedDurationNotLearned, ds.HarborName ?? Properties.Resources.HarborFallback);
                 }
             }
             else if (ds.SeenAtEdge && cargoLife > 0 && ds.FirstSeen.HasValue)
@@ -709,7 +793,7 @@ public partial class MainWindow
                 if (remain.TotalSeconds > 0)
                 {
                     cargoTimer = $"{(int)remain.TotalMinutes}:{remain.Seconds:D2}";
-                    cargoTip = "Time remaining on map (from spawn)";
+                    cargoTip = Properties.Resources.CargoTimeRemainingOnMap;
                 }
             }
             else if (!ds.SeenAtEdge)
@@ -717,8 +801,8 @@ public partial class MainWindow
                 // Connected mid-route: we don't know how long it's been on the map
                 cargoTimer = null; // No timer — we can't know
                 cargoTip = cargoLife > 0
-                    ? $"Connected mid-route – time unknown (route ~{cargoLife}m total)"
-                    : "Connected mid-route – time unknown";
+                    ? string.Format(Properties.Resources.CargoConnectedMidRouteTimeUnknownFormatted, cargoLife)
+                    : Properties.Resources.CargoConnectedMidRouteTimeUnknown;
             }
         }
         else if (cargo.Id == 0 && _cargoLastDespawnUtc.HasValue)
@@ -726,19 +810,43 @@ public partial class MainWindow
             // Cargo is gone but we saw it despawn this session
             var ago = DateTime.UtcNow - _cargoLastDespawnUtc.Value;
             cargoTimer = $"-{(int)ago.TotalMinutes}:{ago.Seconds:D2}";
-            cargoTip = $"Cargo Ship despawned {(int)ago.TotalMinutes}m {ago.Seconds}s ago this session";
+            cargoTip = string.Format(Properties.Resources.CargoDespawnedAgo, (int)ago.TotalMinutes, ago.Seconds);
         }
 
-        activeEvents.Add(new EventDockItem { Name = "Cargo Ship", Icon = "pack://application:,,,/Assets/icons/cargo.png", Active = cargo.Id != 0, Id = cargo.Id, X = cargo.X, Y = cargo.Y, Trackable = true, Type = 5, TimerText = cargoTimer, ToolTip = cargoTip });
+        activeEvents.Add(new EventDockItem { Name = Properties.Resources.CargoShip, Icon = "pack://application:,,,/Assets/icons/cargo.png", Active = cargo.Id != 0, Id = cargo.Id, X = cargo.X, Y = cargo.Y, Trackable = true, Type = 5, TimerText = cargoTimer, ToolTip = cargoTip });
 
  
         // 3. Chinook (Type 4)
         var chinook = GetPersistentEvent(markers, 4);
-        activeEvents.Add(new EventDockItem { Name = "Chinook", Icon = "pack://application:,,,/Assets/icons/ch47.png", Active = chinook.Id != 0, Id = chinook.Id, X = chinook.X, Y = chinook.Y, Trackable = true, Type = 4 });
- 
+        activeEvents.Add(new EventDockItem { Name = Properties.Resources.Chinook, Icon = "pack://application:,,,/Assets/icons/ch47.png", Active = chinook.Id != 0, Id = chinook.Id, X = chinook.X, Y = chinook.Y, Trackable = true, Type = 4 });
+
         // 4. Vendor (Type 6)
         var vendor = GetPersistentEvent(markers, 6);
-        activeEvents.Add(new EventDockItem { Name = "Travelling Vendor", Icon = "pack://application:,,,/Assets/icons/vendor.png", Active = vendor.Id != 0, Id = vendor.Id, X = vendor.X, Y = vendor.Y, Trackable = true, Type = 6 });
+        string? vendorTimer = null;
+        string? vendorTip = null;
+        if (vendor.Id != 0)
+        {
+            if (_vendorSpawnTime.HasValue)
+            {
+                var elapsed = DateTime.UtcNow - _vendorSpawnTime.Value;
+                vendorTimer = elapsed.TotalHours >= 1
+                    ? string.Format(Properties.Resources.TimerHoursMinutes, (int)elapsed.TotalHours, elapsed.Minutes)
+                    : string.Format(Properties.Resources.TimerMinutesSeconds, (int)elapsed.TotalMinutes, elapsed.Seconds);
+                vendorTip = string.Format(Properties.Resources.VendorActiveRunningFor, FormatAgo(elapsed));
+            }
+            else
+            {
+                vendorTimer = "??:??";
+                vendorTip = _vendorMidEvent ? Properties.Resources.ConnectedMidEventSpawnUnknown : Properties.Resources.VendorActiveSpawnUnknown;
+            }
+        }
+        else if (_vendorDespawnTime.HasValue)
+        {
+            var ago = DateTime.UtcNow - _vendorDespawnTime.Value;
+            vendorTimer = $"-{(int)ago.TotalMinutes}:{ago.Seconds:D2}";
+            vendorTip = string.Format(Properties.Resources.VendorDespawnedAgo, FormatAgo(ago));
+        }
+        activeEvents.Add(new EventDockItem { Name = Properties.Resources.Vendor, Icon = "pack://application:,,,/Assets/icons/vendor.png", Active = vendor.Id != 0, Id = vendor.Id, X = vendor.X, Y = vendor.Y, Trackable = true, Type = 6, TimerText = vendorTimer, ToolTip = vendorTip });
  
         // 5. Deep Sea (Using native _deepSeaActive logic)
         string? dsTimer = null;
@@ -750,14 +858,14 @@ public partial class MainWindow
                 var dsElapsed = DateTime.UtcNow - _deepSeaSpawnTime.Value;
                 // Show elapsed time since spawn (upward counting)
                 dsTimer = dsElapsed.TotalHours >= 1
-                    ? $"{(int)dsElapsed.TotalHours}h {dsElapsed.Minutes:D2}m"
-                    : $"{(int)dsElapsed.TotalMinutes}m {dsElapsed.Seconds:D2}s";
-                dsTip = $"Deep Sea active – running for {FormatAgo(dsElapsed)}";
+                    ? string.Format(Properties.Resources.TimerHoursMinutes, (int)dsElapsed.TotalHours, dsElapsed.Minutes)
+                    : string.Format(Properties.Resources.TimerMinutesSeconds, (int)dsElapsed.TotalMinutes, dsElapsed.Seconds);
+                dsTip = string.Format(Properties.Resources.DeepSeaActiveRunningFor, FormatAgo(dsElapsed));
             }
             else
             {
                 dsTimer = "??:??";
-                dsTip = _deepSeaMidEvent ? "Connected mid-event \u2014 spawn time unknown" : "Deep Sea active (spawn time unknown)";
+                dsTip = _deepSeaMidEvent ? Properties.Resources.ConnectedMidEventSpawnUnknown : Properties.Resources.DeepSeaActiveSpawnUnknown;
             }
         }
         else if (_deepSeaDespawnTime.HasValue)
@@ -765,9 +873,9 @@ public partial class MainWindow
             var dsInactive = DateTime.UtcNow - _deepSeaDespawnTime.Value;
             // Negative timer = time since despawn (matching Cargo style)
             dsTimer = $"-{(int)dsInactive.TotalMinutes}:{dsInactive.Seconds:D2}";
-            dsTip = $"Deep Sea ended {FormatAgo(dsInactive)} ago this session";
+            dsTip = string.Format(Properties.Resources.DeepSeaEndedAgo, FormatAgo(dsInactive));
         }
-        activeEvents.Add(new EventDockItem { Name = "Deep Sea Event", Icon = "pack://application:,,,/Assets/icons/ds_event.png", Active = _deepSeaActive, Id = 0, X = 0, Y = 0, Trackable = false, Type = 0, TimerText = dsTimer, ToolTip = dsTip });
+        activeEvents.Add(new EventDockItem { Name = Properties.Resources.DeepSea, Icon = "pack://application:,,,/Assets/icons/ds_event.png", Active = _deepSeaActive, Id = 0, X = 0, Y = 0, Trackable = false, Type = 0, TimerText = dsTimer, ToolTip = dsTip });
 
         Dispatcher.Invoke(() =>
         {
@@ -1099,7 +1207,7 @@ public partial class MainWindow
                     });
                     _heliCrashSites.Remove(existing);
                     if (_announceSpawns && TrackingService.AnnounceHeli)
-                        _ = SendTeamChatSafeAsync($"Crash detected due to server lag — Heli is still on map at {GetGridLabel(m.X, m.Y)}");
+                        _ = SendTeamChatSafeAsync(string.Format(Properties.Resources.AlertHeliCrashFalseAlarm, GetGridLabel(m.X, m.Y)));
                     AppendLog($"[HeliCrash] False alarm retracted — Heli {key} reappeared at {GetGridLabel(m.X, m.Y)}");
                 }
             }
@@ -1189,6 +1297,35 @@ public partial class MainWindow
                         _dynKnown.Add(key);
                         AppendLog($"[DynEvent] New: Type={m.Type}, Kind={m.Kind}, Label={m.Label}");
 
+                        if (m.Type == 8) // Patrol Heli
+                        {
+                            if (_firstPollDyn)
+                            {
+                                _heliMidEvent = true;
+                                _heliSpawnTime = null;
+                            }
+                            else
+                            {
+                                _heliSpawnTime = DateTime.UtcNow;
+                                _heliMidEvent = false;
+                            }
+                        }
+                        else if (m.Type == 6) // Travelling Vendor
+                        {
+                            if (_firstPollDyn)
+                            {
+                                _vendorMidEvent = true;
+                                _vendorSpawnTime = null;
+                                _vendorDespawnTime = null;
+                            }
+                            else
+                            {
+                                _vendorSpawnTime = DateTime.UtcNow;
+                                _vendorMidEvent = false;
+                                _vendorDespawnTime = null;
+                            }
+                        }
+
                         bool shouldAnnounce = m.Type switch
                         {
                             5 => false, // Handled exclusively by ProcessCargoDocking to avoid duplicates
@@ -1204,7 +1341,7 @@ public partial class MainWindow
                         {
                             var grid = GetGridLabel(m.X, m.Y);
                             var kind = EventKindText(m.Type);
-                            _ = SendTeamChatSafeAsync($"{kind} spawned in at {grid}");
+                            _ = SendTeamChatSafeAsync(string.Format(Properties.Resources.AlertEventSpawned, kind, grid));
                         }
                     }
 
@@ -1441,6 +1578,8 @@ public partial class MainWindow
                     bool crashed = IsInsideMap(state.LastRealX, state.LastRealY);
                     _heliLastEventUtc = DateTime.UtcNow;
                     _heliLastEventWasCrash = crashed;
+                    _heliSpawnTime = null;
+                    _heliMidEvent = false;
 
                     if (crashed)
                     {
@@ -1450,13 +1589,20 @@ public partial class MainWindow
                         _heliCrashSites.Add(site);
                         _ = Dispatcher.InvokeAsync(() => site.MapElement = PlaceHeliCrashSite(site));
                         if (_announceSpawns && TrackingService.AnnounceHeli)
-                            _ = SendTeamChatSafeAsync($"Patrol Heli shot down at {crashGrid}");
+                            _ = SendTeamChatSafeAsync(string.Format(Properties.Resources.AlertHeliShotDown, crashGrid));
                         AppendLog($"[HeliCrash] Crash detected at {crashGrid} (last real pos {cx:F0},{cy:F0})");
                     }
                     else
                     {
                         AppendLog($"[Heli] Patrol Heli left the map area.");
                     }
+                }
+                else if (state != null && state.Type == 6) // Travelling Vendor
+                {
+                    _vendorDespawnTime = DateTime.UtcNow;
+                    _vendorSpawnTime = null;
+                    _vendorMidEvent = false;
+                    AppendLog("[Vendor] Travelling Vendor despawned or left the map area.");
                 }
 
                 Overlay.Children.Remove(oldEl);

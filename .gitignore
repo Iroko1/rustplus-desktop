@@ -6,7 +6,7 @@
 **/*.suo
 *.cache
 *.log
-
+/graphify-out/
 # Publish-Output (dotnet publish)
 **/publish/
 
@@ -35,11 +35,19 @@ Thumbs.db
 installer/Output/*
 !installer/Output/.gitkeep
 
+# Lokale Server-/Helper-Skripte
+**/Scripts/
+
 # Doku/Assets (rein informativ – wäre auch ohne diese Zeilen ok)
 !README.md
 !LICENSE
 !docs/
+docs/*
 !RustPlusDesktop/*.png
 !RustPlusDesktop/*.jpg
 RustPlusDesktop/RustPlusDesk_lbvqmzga_wpftmp.csproj
 RustPlusDesktop/Setup.iss
+
+# Secrets config
+.env
+RustPlusDesktop/Services/Data/ObfuscatedSecrets.cs
